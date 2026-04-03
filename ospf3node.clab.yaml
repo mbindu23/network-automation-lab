@@ -1,0 +1,22 @@
+name: ospf3node
+
+topology:
+  nodes:
+    R1:
+      kind: ceos
+      image: ceos:latest
+      startup-config: configs/R1.cfg
+
+    R2:
+      kind: ceos
+      image: ceos:latest
+      startup-config: configs/R2.cfg
+
+    R3:
+      kind: ceos
+      image: ceos:latest
+      startup-config: configs/R3.cfg
+
+  links:
+    - endpoints: ["R1:eth1", "R2:eth1"]   # Area 0 link
+    - endpoints: ["R2:eth2", "R3:eth1"]   # Area 1 link

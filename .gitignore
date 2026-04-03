@@ -1,0 +1,11 @@
+cat > .gitignore << 'EOF'
+__pycache__/
+*.pyc
+.env
+netauto-env/
+venv/
+.clab/
+clab-*/
+secrets.yaml
+credentials.py
+EOF

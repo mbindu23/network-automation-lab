@@ -1,0 +1,14 @@
+cat > README.md << 'EOF'
+# Network Automation Lab
+
+Personal lab for learning routing protocols and network automation.
+Built with ContainerLab + Arista cEOS on Ubuntu.
+
+## Lab 1 — OSPF 3-node topology
+- R1: Area 0 internal router
+- R2: ABR connecting Area 0 and Area 1
+- R3: Area 1 internal router
+
+## Tools
+- ContainerLab, Arista cEOS 4.34.5M, Python 3 + Netmiko
+EOF
