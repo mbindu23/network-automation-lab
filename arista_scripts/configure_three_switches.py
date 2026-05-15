@@ -102,7 +102,6 @@ def _push(host: str, commands: List[str]) -> None:
         "password": "admin",
         "port": 22,
         "timeout": 120,
-        "disable_enable_mode": True,
     }
     with ConnectHandler(**dev) as conn:
         out = conn.send_config_set(commands, exit_config_mode=True)
