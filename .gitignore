@@ -13,6 +13,7 @@ __pycache__/
 .env
 netauto-env/
 venv/
+.venv/
 
 # Containerlab (generic + repo-specific path above)
 .clab/
