@@ -5,7 +5,19 @@ cEOS-lab-*.tar
 # Containerlab runtime (TLS keys, flash, logs — recreated on deploy)
 arista_scripts/clab-three-ceos/
 
-# Python
+# Python / tooling
 __pycache__/
 *.py[cod]
+*.pyc
 .Python
+.env
+netauto-env/
+venv/
+
+# Containerlab (generic + repo-specific path above)
+.clab/
+clab-*/
+
+# Secrets
+secrets.yaml
+credentials.py
