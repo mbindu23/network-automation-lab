@@ -94,19 +94,57 @@ def _build_config(hostname: str, mgmt_cidr: str, gateway: str) -> List[str]:
     ]
 
 
-def _push(host: str, commands: List[str]) -> None:
+def _log(verbose: bool, msg: str) -> None:
+    if verbose:
+        print(msg, file=sys.stderr, flush=True)
+
+
+def _push(host: str, commands: List[str], *, verbose: bool = False) -> None:
+    """Push config using delay-based I/O.
+
+    Netmiko's default Arista ``config_mode()`` regex often fails on cEOS when SSH
+    banners / pacing differ; ``send_command_timing`` avoids strict prompt matching.
+    """
     dev = {
         "device_type": "arista_eos",
         "host": host,
         "username": "admin",
         "password": "admin",
         "port": 22,
-        "timeout": 120,
+        # cEOS / Containerlab can be slow to present a prompt after auth (large MOTD, CPU).
+        "timeout": 180,
+        "conn_timeout": 90,
+        "banner_timeout": 120,
+        "auth_timeout": 90,
+        "session_timeout": 120,
+        "fast_cli": False,
+        "global_delay_factor": 2,
     }
+    seq = ["configure terminal", *commands, "end", "write memory"]
+    chunks: List[str] = []
+    print(
+        f"  → SSH {host}: connecting (cEOS can take 1–3 minutes before the first prompt; use -v for steps)",
+        file=sys.stderr,
+        flush=True,
+    )
+    _log(verbose, f"  SSH {host}: opening session...")
     with ConnectHandler(**dev) as conn:
-        out = conn.send_config_set(commands, exit_config_mode=True)
-        conn.save_config()
-        print(out)
+        _log(verbose, "  connected; preparing channel...")
+        conn.clear_buffer()
+        # Lab admin is usually already privileged; skip enable() to avoid stalls on enable prompts.
+        _log(verbose, "  sending configuration...")
+        for i, cmd in enumerate(seq, start=1):
+            _log(verbose, f"    [{i}/{len(seq)}] {cmd[:72]}{'…' if len(cmd) > 72 else ''}")
+            chunks.append(
+                conn.send_command_timing(
+                    cmd,
+                    last_read=3.0,
+                    read_timeout=240,
+                    strip_prompt=False,
+                    strip_command=False,
+                )
+            )
+    print("\n".join(chunks))
 
 
 def main() -> int:
@@ -136,6 +174,12 @@ def main() -> int:
         metavar=("SW1_HOST", "SW2_HOST", "SW3_HOST"),
         help="Skip inspect; SSH targets in order sw1 sw2 sw3 (IPs or DNS names)",
     )
+    p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print SSH progress on stderr (useful if the script appears stuck)",
+    )
     args = p.parse_args()
 
     hosts: Dict[str, str]
@@ -154,7 +198,7 @@ def main() -> int:
         print(f"\n=== {key} ({hosts[key]}): hostname {hname}, Ma0 {mgmt}, gw {args.gateway} ===")
         cfg = _build_config(hname, mgmt, args.gateway)
         try:
-            _push(hosts[key], cfg)
+            _push(hosts[key], cfg, verbose=args.verbose)
         except Exception as exc:  # noqa: BLE001 — surface useful failure to operator
             print(f"error configuring {key}: {exc}", file=sys.stderr)
             return 1
