@@ -1,0 +1,13 @@
+name: three-ceos
+
+topology:
+  nodes:
+    sw1:
+      kind: arista_ceos
+      image: ceos:latest
+    sw2:
+      kind: arista_ceos
+      image: ceos:latest
+    sw3:
+      kind: arista_ceos
+      image: ceos:latest

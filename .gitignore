@@ -1,0 +1,11 @@
+# cEOS / vendor images (large; do not commit)
+cEOS-lab-*.tar
+*.tar.xz
+
+# Containerlab runtime (TLS keys, flash, logs — recreated on deploy)
+arista_scripts/clab-three-ceos/
+
+# Python
+__pycache__/
+*.py[cod]
+.Python
