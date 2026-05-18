@@ -99,6 +99,25 @@ def _log(verbose: bool, msg: str) -> None:
         print(msg, file=sys.stderr, flush=True)
 
 
+def _ensure_privileged(conn: Any, verbose: bool) -> str:
+    """Enter enable mode. cEOS SSH often lands at ``hostname>`` (exec), not ``#``."""
+    _log(verbose, "  enable (privileged exec)...")
+    out = conn.send_command_timing("enable", last_read=2.0, read_timeout=60)
+    prompt = conn.find_prompt(delay_factor=2)
+    if prompt.rstrip().endswith("#"):
+        return out
+    # Some images prompt for an enable password (lab default is often same as login).
+    _log(verbose, "  enable password...")
+    out += conn.send_command_timing("admin", last_read=2.0, read_timeout=30)
+    prompt = conn.find_prompt(delay_factor=2)
+    if not prompt.rstrip().endswith("#"):
+        raise RuntimeError(
+            f"still not in privileged mode (prompt {prompt!r}). "
+            "Config was not applied — only run from exec (>) if you see '% Invalid input'."
+        )
+    return out
+
+
 def _push(host: str, commands: List[str], *, verbose: bool = False) -> None:
     """Push config using delay-based I/O.
 
@@ -110,6 +129,7 @@ def _push(host: str, commands: List[str], *, verbose: bool = False) -> None:
         "host": host,
         "username": "admin",
         "password": "admin",
+        "secret": "admin",  # enable password when the device prompts for one
         "port": 22,
         # cEOS / Containerlab can be slow to present a prompt after auth (large MOTD, CPU).
         "timeout": 180,
@@ -131,19 +151,22 @@ def _push(host: str, commands: List[str], *, verbose: bool = False) -> None:
     with ConnectHandler(**dev) as conn:
         _log(verbose, "  connected; preparing channel...")
         conn.clear_buffer()
-        # Lab admin is usually already privileged; skip enable() to avoid stalls on enable prompts.
+        chunks.append(_ensure_privileged(conn, verbose))
         _log(verbose, "  sending configuration...")
         for i, cmd in enumerate(seq, start=1):
             _log(verbose, f"    [{i}/{len(seq)}] {cmd[:72]}{'…' if len(cmd) > 72 else ''}")
-            chunks.append(
-                conn.send_command_timing(
-                    cmd,
-                    last_read=3.0,
-                    read_timeout=240,
-                    strip_prompt=False,
-                    strip_command=False,
-                )
+            chunk = conn.send_command_timing(
+                cmd,
+                last_read=3.0,
+                read_timeout=240,
+                strip_prompt=False,
+                strip_command=False,
             )
+            if "% Invalid input" in chunk:
+                raise RuntimeError(
+                    f"EOS rejected command {cmd!r} — still not in config/privileged mode?\n{chunk}"
+                )
+            chunks.append(chunk)
     print("\n".join(chunks))
 
 
