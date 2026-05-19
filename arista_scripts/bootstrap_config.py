@@ -38,7 +38,7 @@ except ImportError:
         "    sudo apt install python3.14-venv   # or: sudo apt install python3-venv\n"
         "    cd ~/Automation && python3 -m venv .venv\n"
         "    .venv/bin/pip install netmiko\n"
-        "    .venv/bin/python arista_scripts/configure_three_switches.py\n",
+        "    .venv/bin/python arista_scripts/bootstrap_config.py\n",
         file=sys.stderr,
     )
     raise SystemExit(1) from None
@@ -230,7 +230,7 @@ def _push(
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Configure three Arista cEOS switches.")
+    p = argparse.ArgumentParser(description="Bootstrap (baseline) config for Arista cEOS switches.")
     p.add_argument(
         "-t",
         "--topo",
