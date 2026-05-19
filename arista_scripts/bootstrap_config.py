@@ -4,7 +4,7 @@ Apply baseline configuration to the three cEOS nodes (sw1–sw3).
 
 For each switch:
   - hostname Switch1 / Switch2 / Switch3 (EOS hostnames cannot contain spaces)
-  - static IPv4 on Management0 + default route (Containerlab-style gateway)
+  - static IPv4 on Management0 (description: management) + default route
   - management SSH + HTTPS (management api http-commands)
   - local user arista.net with secret arista (hashed on-device)
 
@@ -46,6 +46,9 @@ except ImportError:
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_TOPO = SCRIPT_DIR / "three-ceos.clab.yml"
+
+# Management0 appears as Management0 in brief; Ma0 is the usual short name.
+SHOW_MGMT_BRIEF = "show ip interface brief | include Management0"
 
 
 def _resolve_clab() -> Optional[str]:
@@ -96,6 +99,7 @@ def _build_config(hostname: str, mgmt_cidr: str, gateway: str) -> tuple[List[str
     ]
     mgmt0 = [
         "interface Management0",
+        "   description management",
         f"   ip address {mgmt_cidr}",
         f"ip route 0.0.0.0/0 {gateway}",
     ]
@@ -181,6 +185,7 @@ def _push(
     mgmt0_commands: List[str],
     mgmt_cidr: str,
     *,
+    switch: str = "",
     verbose: bool = False,
 ) -> None:
     """Push config using delay-based I/O; reconnect after Ma0 IP change to save config."""
@@ -226,7 +231,19 @@ def _push(
                 strip_command=False,
             )
         )
-    print("\n".join(chunks))
+        _log(verbose, f"  {SHOW_MGMT_BRIEF}...")
+        ma0_brief = conn.send_command_timing(
+            SHOW_MGMT_BRIEF,
+            last_read=2.0,
+            read_timeout=60,
+            strip_prompt=False,
+            strip_command=False,
+        )
+
+    label = switch or save_host
+    print(f"\n--- {label} ({save_host}) : {SHOW_MGMT_BRIEF} ---\n{ma0_brief}\n")
+    if verbose:
+        print("\n".join(chunks))
 
 
 def main() -> int:
@@ -297,12 +314,12 @@ def main() -> int:
         print(f"\n=== {key} ({hosts[key]}): hostname {hname}, Ma0 {mgmt}, gw {args.gateway} ===")
         main_cfg, mgmt0_cfg = _build_config(hname, mgmt, args.gateway)
         try:
-            _push(hosts[key], main_cfg, mgmt0_cfg, mgmt, verbose=args.verbose)
+            _push(hosts[key], main_cfg, mgmt0_cfg, mgmt, switch=key, verbose=args.verbose)
         except Exception as exc:  # noqa: BLE001 — surface useful failure to operator
             print(f"error configuring {key}: {exc}", file=sys.stderr)
             return 1
 
-    print("\nDone. Verify with: show management api http-commands ; show running-config section management ssh")
+    print("\nDone. Each switch above shows Ma0 via: show ip interface brief | include Management0")
     return 0
 
 
