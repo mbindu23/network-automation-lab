@@ -11,3 +11,11 @@ topology:
     sw3:
       kind: arista_ceos
       image: ceos:latest
+
+  links:
+    # sw1 <-> sw2 (10.1.1.0/24)
+    - endpoints: ["sw1:eth1", "sw2:eth1"]
+    # sw1 <-> sw3 (10.10.10.0/24)
+    - endpoints: ["sw1:eth2", "sw3:eth1"]
+    # sw2 <-> sw3 (10.20.20.0/24) — EOS Ethernet2 on both
+    - endpoints: ["sw2:eth2", "sw3:eth2"]
