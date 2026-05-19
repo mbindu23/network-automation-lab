@@ -13,6 +13,8 @@ Requires:
   - pip install netmiko
   - clab or containerlab on PATH (for automatic IP lookup), unless you pass --hosts.
 
+By default only sw1 is configured; use --switches sw2 sw3 or --all for more nodes.
+
 Note: Changing Management0 addressing can drop the SSH session before the script
 finishes. If that happens, re-run using the new addresses via --hosts.
 """
@@ -76,22 +78,28 @@ def _inspect_ips(topo: Path) -> Dict[str, str]:
     return out
 
 
-def _build_config(hostname: str, mgmt_cidr: str, gateway: str) -> List[str]:
-    """EOS config lines (without configure terminal / end — Netmiko handles mode)."""
-    # Hostnames cannot contain spaces in EOS; Switch1 == “Switch 1” style label.
-    return [
+def _mgmt_host(mgmt_cidr: str) -> str:
+    return mgmt_cidr.split("/")[0].strip()
+
+
+def _build_config(hostname: str, mgmt_cidr: str, gateway: str) -> tuple[List[str], List[str]]:
+    """Return (main lines, Management0 lines). Ma0 is applied last — it often drops SSH."""
+    main = [
         f"hostname {hostname}",
         "aaa authorization exec default local",
         "management ssh",
         "   idle-timeout 0",
         "management api http-commands",
-        "   protocol https default",
+        "   protocol https",
         "   no shutdown",
+        "username arista.net privilege 15 role network-admin secret arista",
+    ]
+    mgmt0 = [
         "interface Management0",
         f"   ip address {mgmt_cidr}",
         f"ip route 0.0.0.0/0 {gateway}",
-        "username arista.net privilege 15 role network-admin secret arista",
     ]
+    return main, mgmt0
 
 
 def _log(verbose: bool, msg: str) -> None:
@@ -118,20 +126,14 @@ def _ensure_privileged(conn: Any, verbose: bool) -> str:
     return out
 
 
-def _push(host: str, commands: List[str], *, verbose: bool = False) -> None:
-    """Push config using delay-based I/O.
-
-    Netmiko's default Arista ``config_mode()`` regex often fails on cEOS when SSH
-    banners / pacing differ; ``send_command_timing`` avoids strict prompt matching.
-    """
-    dev = {
+def _device_params(host: str) -> Dict[str, Any]:
+    return {
         "device_type": "arista_eos",
         "host": host,
         "username": "admin",
         "password": "admin",
-        "secret": "admin",  # enable password when the device prompts for one
+        "secret": "admin",
         "port": 22,
-        # cEOS / Containerlab can be slow to present a prompt after auth (large MOTD, CPU).
         "timeout": 180,
         "conn_timeout": 90,
         "banner_timeout": 120,
@@ -140,7 +142,49 @@ def _push(host: str, commands: List[str], *, verbose: bool = False) -> None:
         "fast_cli": False,
         "global_delay_factor": 2,
     }
-    seq = ["configure terminal", *commands, "end", "write memory"]
+
+
+def _send_config_lines(
+    conn: Any,
+    lines: List[str],
+    *,
+    verbose: bool,
+    label: str,
+    read_timeout: float = 120,
+) -> List[str]:
+    chunks: List[str] = []
+    for i, cmd in enumerate(lines, start=1):
+        _log(verbose, f"    [{label} {i}/{len(lines)}] {cmd[:72]}{'…' if len(cmd) > 72 else ''}")
+        try:
+            chunk = conn.send_command_timing(
+                cmd,
+                last_read=2.0,
+                read_timeout=read_timeout,
+                strip_prompt=False,
+                strip_command=False,
+            )
+        except Exception as exc:
+            # Management0 address change often resets the SSH session mid-command.
+            if "Management0" in cmd or "ip route" in cmd:
+                _log(verbose, f"    (session may have dropped after {cmd!r}: {exc})")
+                break
+            raise
+        if "% Invalid input" in chunk:
+            raise RuntimeError(f"EOS rejected command {cmd!r}:\n{chunk}")
+        chunks.append(chunk)
+    return chunks
+
+
+def _push(
+    host: str,
+    main_commands: List[str],
+    mgmt0_commands: List[str],
+    mgmt_cidr: str,
+    *,
+    verbose: bool = False,
+) -> None:
+    """Push config using delay-based I/O; reconnect after Ma0 IP change to save config."""
+    new_host = _mgmt_host(mgmt_cidr)
     chunks: List[str] = []
     print(
         f"  → SSH {host}: connecting (cEOS can take 1–3 minutes before the first prompt; use -v for steps)",
@@ -148,25 +192,40 @@ def _push(host: str, commands: List[str], *, verbose: bool = False) -> None:
         flush=True,
     )
     _log(verbose, f"  SSH {host}: opening session...")
-    with ConnectHandler(**dev) as conn:
-        _log(verbose, "  connected; preparing channel...")
+    with ConnectHandler(**_device_params(host)) as conn:
         conn.clear_buffer()
         chunks.append(_ensure_privileged(conn, verbose))
-        _log(verbose, "  sending configuration...")
-        for i, cmd in enumerate(seq, start=1):
-            _log(verbose, f"    [{i}/{len(seq)}] {cmd[:72]}{'…' if len(cmd) > 72 else ''}")
-            chunk = conn.send_command_timing(
-                cmd,
+        _log(verbose, "  configure terminal + baseline...")
+        chunks.extend(
+            _send_config_lines(
+                conn,
+                ["configure terminal", *main_commands, *mgmt0_commands, "end"],
+                verbose=verbose,
+                label="cfg",
+                read_timeout=60,
+            )
+        )
+
+    save_host = new_host if new_host != host else host
+    if new_host != host:
+        print(
+            f"  → SSH {save_host}: reconnecting to save (Management0 moved off {host})",
+            file=sys.stderr,
+            flush=True,
+        )
+    _log(verbose, f"  SSH {save_host}: write memory...")
+    with ConnectHandler(**_device_params(save_host)) as conn:
+        conn.clear_buffer()
+        chunks.append(_ensure_privileged(conn, verbose))
+        chunks.append(
+            conn.send_command_timing(
+                "write memory",
                 last_read=3.0,
-                read_timeout=240,
+                read_timeout=120,
                 strip_prompt=False,
                 strip_command=False,
             )
-            if "% Invalid input" in chunk:
-                raise RuntimeError(
-                    f"EOS rejected command {cmd!r} — still not in config/privileged mode?\n{chunk}"
-                )
-            chunks.append(chunk)
+        )
     print("\n".join(chunks))
 
 
@@ -203,6 +262,18 @@ def main() -> int:
         action="store_true",
         help="Print SSH progress on stderr (useful if the script appears stuck)",
     )
+    p.add_argument(
+        "--all",
+        action="store_true",
+        help="Configure sw1, sw2, and sw3 (default: sw1 only)",
+    )
+    p.add_argument(
+        "--switches",
+        nargs="+",
+        choices=["sw1", "sw2", "sw3"],
+        metavar="SW",
+        help="Configure only these nodes (e.g. --switches sw2 sw3)",
+    )
     args = p.parse_args()
 
     hosts: Dict[str, str]
@@ -216,12 +287,17 @@ def main() -> int:
         ("sw2", "Switch2", args.sw2_ip),
         ("sw3", "Switch3", args.sw3_ip),
     ]
+    if args.switches:
+        wanted = set(args.switches)
+        plan = [entry for entry in plan if entry[0] in wanted]
+    elif not args.all:
+        plan = plan[:1]
 
     for key, hname, mgmt in plan:
         print(f"\n=== {key} ({hosts[key]}): hostname {hname}, Ma0 {mgmt}, gw {args.gateway} ===")
-        cfg = _build_config(hname, mgmt, args.gateway)
+        main_cfg, mgmt0_cfg = _build_config(hname, mgmt, args.gateway)
         try:
-            _push(hosts[key], cfg, verbose=args.verbose)
+            _push(hosts[key], main_cfg, mgmt0_cfg, mgmt, verbose=args.verbose)
         except Exception as exc:  # noqa: BLE001 — surface useful failure to operator
             print(f"error configuring {key}: {exc}", file=sys.stderr)
             return 1
