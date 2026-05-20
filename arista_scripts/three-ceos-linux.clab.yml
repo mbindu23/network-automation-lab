@@ -1,0 +1,28 @@
+name: three-ceos-linux
+
+topology:
+  nodes:
+    sw1:
+      kind: arista_ceos
+      image: ceos:latest
+    sw2:
+      kind: arista_ceos
+      image: ceos:latest
+    sw3:
+      kind: arista_ceos
+      image: ceos:latest
+    host1:
+      kind: linux
+      image: ghcr.io/srl-labs/alpine
+    host2:
+      kind: linux
+      image: ghcr.io/srl-labs/alpine
+
+  links:
+    # switch mesh (three-ceos)
+    - endpoints: ["sw1:eth1", "sw2:eth1"]
+    - endpoints: ["sw1:eth2", "sw3:eth1"]
+    - endpoints: ["sw2:eth2", "sw3:eth2"]
+    # Linux hosts -> switch eth3 (EOS Ethernet3)
+    - endpoints: ["host1:eth1", "sw2:eth3"]
+    - endpoints: ["host2:eth1", "sw3:eth3"]

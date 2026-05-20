@@ -8,6 +8,13 @@ For each switch:
   - management SSH + HTTPS (management api http-commands)
   - local user arista.net with secret arista (hashed on-device)
 
+Linux hosts (host1, host2) are deployed by linux_host_script.py; they are not
+configured here. After bootstrap, run interface_configuration.py for switch
+and host data-plane IPs.
+
+Recommended lab: three-ceos-linux (switches + host1/host2). Deploy order:
+  linux_host_script.py -> bootstrap_config.py --all -> interface_configuration.py
+
 Requires:
   - Lab deployed; SSH reachable as admin (default Containerlab: admin / admin).
   - pip install netmiko
@@ -29,6 +36,10 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
 try:
     from netmiko import ConnectHandler
 except ImportError:
@@ -44,8 +55,9 @@ except ImportError:
     raise SystemExit(1) from None
 
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_TOPO = SCRIPT_DIR / "three-ceos.clab.yml"
+from lab_topology import DEFAULT_TOPO, TOPO_SWITCHES, TOPO_WITH_HOSTS  # noqa: E402
+
+SCRIPT_DIR = _SCRIPT_DIR
 
 # Management0 appears as Management0 in brief; Ma0 is the usual short name.
 SHOW_MGMT_BRIEF = "show ip interface brief | include Management0"
@@ -79,6 +91,60 @@ def _inspect_ips(topo: Path) -> Dict[str, str]:
         if want not in out:
             raise RuntimeError(f"could not find IPv4 for {want} in clab inspect output")
     return out
+
+
+def _linux_containers_in_lab(topo: Path) -> List[str]:
+    """Return clab container names for host1/host2 when present."""
+    lab_bin = _resolve_clab()
+    if not lab_bin:
+        return []
+    raw = subprocess.check_output([lab_bin, "inspect", "-t", str(topo), "-f", "json"], text=True)
+    data: Dict[str, Any] = json.loads(raw)
+    found: List[str] = []
+    for _lab, containers in data.items():
+        for c in containers:
+            name = str(c.get("name") or "")
+            if name.endswith(("-host1", "-host2")):
+                found.append(name.rsplit("-", 1)[-1])
+    return found
+
+
+def _preflight_lab(topo: Path) -> None:
+    """Ensure switches (and Linux hosts when using three-ceos-linux topo) are running."""
+    lab_bin = shutil.which("clab") or shutil.which("containerlab")
+    if not lab_bin:
+        return
+    raw = subprocess.run(
+        [lab_bin, "inspect", "-t", str(topo), "-f", "json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if raw.returncode != 0:
+        return
+    data = json.loads(raw.stdout)
+    down = [
+        str(c.get("name") or "unknown")
+        for _lab, containers in data.items()
+        for c in containers
+        if str(c.get("state") or "").lower() != "running"
+    ]
+    if down:
+        raise RuntimeError(
+            f"lab nodes not running: {', '.join(down)}\n"
+            f"  clab deploy -t {topo} --reconfigure\n"
+            "  .venv/bin/python arista_scripts/linux_host_script.py\n"
+            "  .venv/bin/python arista_scripts/bootstrap_config.py -v --all"
+        )
+    if topo.resolve() == TOPO_WITH_HOSTS.resolve():
+        have = set(_linux_containers_in_lab(topo))
+        need = {"host1", "host2"}
+        if not need.issubset(have):
+            missing = ", ".join(sorted(need - have))
+            raise RuntimeError(
+                f"topology expects Linux hosts but clab inspect missing: {missing}\n"
+                "  .venv/bin/python arista_scripts/linux_host_script.py"
+            )
 
 
 def _mgmt_host(mgmt_cidr: str) -> str:
@@ -253,7 +319,7 @@ def main() -> int:
         "--topo",
         type=Path,
         default=DEFAULT_TOPO,
-        help=f"Topology file for clab inspect (default: {DEFAULT_TOPO})",
+        help=f"Topology for inspect (default: three-ceos-linux; legacy: {TOPO_SWITCHES.name})",
     )
     p.add_argument(
         "--gateway",
@@ -293,6 +359,12 @@ def main() -> int:
     )
     args = p.parse_args()
 
+    try:
+        _preflight_lab(args.topo)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
     hosts: Dict[str, str]
     if args.hosts:
         hosts = {"sw1": args.hosts[0], "sw2": args.hosts[1], "sw3": args.hosts[2]}
@@ -319,7 +391,11 @@ def main() -> int:
             print(f"error configuring {key}: {exc}", file=sys.stderr)
             return 1
 
-    print("\nDone. Each switch above shows Ma0 via: show ip interface brief | include Management0")
+    print(
+        "\nDone (switches only). Next: interface_configuration.py for Ethernet "
+        "and Linux host data-plane IPs.",
+        file=sys.stderr,
+    )
     return 0
 
 
